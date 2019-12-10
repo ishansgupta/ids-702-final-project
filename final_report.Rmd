@@ -1,0 +1,278 @@
+
+---
+title: "Predicting salaries using StackOverflow Data"
+author:
+- "Ishan Gupta"
+- https://github.com/ishansgupta/ids-702-final-project
+output:
+  pdf_document:
+    fig_caption: yes
+  word_document: default
+  html_document:
+    highlight: pygments
+    theme: spacelab
+header-includes: \usepackage{float}
+---
+
+```{r setup, include=FALSE}
+# DO NOT ALTER CODE IN THIS CHUNK
+# The very first time you use this R markdown file, you should install each of the packages below.
+# The same goes for other packages you might decide to use
+# Remember that you only need to install each R package once in R (ever -- unless you change computers).
+# All you need to do whenever you need to use the package again (after restarting the R session),
+# is to use the library function to call the package.
+# For example, type install.packages("knitr") in the console to install the knitr package. 
+knitr::opts_chunk$set(echo = TRUE, fig.pos = 'h', fig.align = 'center')
+knitr::opts_chunk$set(fig.cap = "",  fig.path = "Plot")
+knitr::opts_chunk$set(fig.pos = 'H')
+library(knitr)
+library(dplyr)
+library(ggplot2)
+library(arm)
+library(pROC)
+library(tidyverse)
+library(MASS)
+library(tigerstats)
+library(leaps)
+library(car)
+library(rms)
+require(caret)
+require(e1071)
+library(broom)
+library(doBy)
+library(ISLR)
+library(glmnet)
+library(lmerTest)
+library(sjPlot)
+
+```
+
+* * *
+
+## Introduction 
+Stack Overflow’s annual Developer Survey is the largest and most comprehensive survey of people who code around the world. For the year 2019 more than 90,000 developers participated in this 20 minute survey. 
+
+The survey consists of a range of questions related to work satisfaction, employment type, salaries, programming languages, databases, frameworks etc. The total question set conists of 85 questions.
+
+Number of programmers are increasing day by day, and so are programming languages. Very often the question arises, learning which language will have the most imapct. In this project, stackoverflow's salary data is used to see the impact different languages have on salaries. The impact of working in different countries is also being analyzed. From a traditional software engineer, the number of coding positions has expanded over time. We have different positions like Developer, Designer, Data Scientist, Business Analyst, Engineering Managers etc. We try to see which positions help your salary the most.
+
+Apart from the answering the questions, we try to find more interesting insights.
+
+## Data and Exploratory Data Analysis
+The data used in this study is the same set of the data in the original study. The dictionary is not included in this document for the sake of brevity. More details about the original study can be found at https://insights.stackoverflow.com/survey/2019. Data can be downloaded at https://insights.stackoverflow.com/survey. This dataset consists of the data dictionary as well.  
+
+
+In the data cleaning process, three major challenges had to be resolved.
+
+1. Cleaning up different techonologies - We were given a respondent's programming languages in one column as ; seperated values, with the language being the primary language of the person. We split the values and stored top 10 languages for a user. In this project, we will be using the first language (primary) for our analysis.
+
+2. Job Title Sanitization - Using domain knowledge, developer - Backend, developer - Frontend and other type of developers were grouped together.
+
+3. While predicting salaries, number of years of work experience might seem a very legitimate metric. The survey question was "How many years have you coded or how many years have you coded in work?". The question is a bit vague, and as expected, we didn't see an upward trend with this variable to the compensation. We tried standardizing the compensation in different brackets but the results didn't look promising. 
+
+
+Apart from resolving the above issues, we removed data for respondents in the top 3%. This was done to remove outliers which might hamper our analysis.
+
+
+Apart from this we verified the converted currency to USD provided by StackOverflow using an external package with latest conversion rates. The difference between the data didn't seem significant and we would be using the converted compensation USD(annually) provided by StackOverdlow.
+
+We also notice major difference in salaried from different countries. There we would be examining the impact of salary on 10 high income countries
+
+
+```{r, echo = FALSE, include=FALSE}
+public_responses = read.csv("/Users/ishangupta/Downloads/developer_survey_2019 (1)/survey_results_public.csv")
+schema = read.csv("/Users/ishangupta/Downloads/developer_survey_2019 (1)/survey_results_schema.csv")
+
+#### Lets start analyzing the difference by different countries
+salary_data_complete = public_responses[!is.na(public_responses$ConvertedComp),]
+
+### Filter out the data with outliers
+### Only consider salaries greater than 10000 and less than 1000000
+salary_data_complete <- salary_data_complete[salary_data_complete$ConvertedComp > 10000,]
+salary_data_complete <- salary_data_complete[salary_data_complete$ConvertedComp < quantile(salary_data_complete$ConvertedComp,prob=1-3/100),]
+
+country_level_data <- data.frame(count=sort(table(salary_data_complete$Country), decreasing=TRUE))
+top_countries = c('United States', 'United Kingdom', 'Germany', 'Canada',"Netherlands", "Australia", "Sweden", "Switzerland")
+
+country_required <- salary_data_complete[salary_data_complete$Country %in% top_countries, ]
+education_level_data <- data.frame(count=sort(table(salary_data_complete$EdLevel), decreasing=TRUE))
+required_education_levels <- c("Bachelor’s degree (BA, BS, B.Eng., etc.)", "Master’s degree (MA, MS, M.Eng., MBA, etc.)", "Some college/university study without earning a degree", "Associate degree", "Other doctoral degree (Ph.D, Ed.D., etc.)")
+education_required <- salary_data_complete[salary_data_complete$EdLevel %in% required_education_levels, ]
+education_required_us <- salary_data_complete[salary_data_complete$EdLevel %in% required_education_levels & (salary_data_complete$Country == "United States"), ]
+a <- str_split_fixed(salary_data_complete$LanguageWorkedWith, ";", 10)
+salary_data_complete_with_tech <- cbind(salary_data_complete, a)
+names(salary_data_complete_with_tech) <- make.names(names(salary_data_complete_with_tech))
+salary_data_complete_with_tech$LangaugesKnown <- sapply(strsplit(as.character(salary_data_complete_with_tech$LanguageWorkedWith), ";"), length)
+
+tech_level_data <- data.frame(count=sort(table(salary_data_complete_with_tech$X1), decreasing=TRUE))
+top_techs <- c("Bash/Shell/PowerShell", "HTML/CSS","C#", "Java", "C", "C++", "Assembly", "JavaScript", "Go", "Python", "Objective-C",
+"Elixir", "Clojure", "SQL", "R")
+tech_required <- salary_data_complete_with_tech[salary_data_complete_with_tech$X1 %in% top_techs, ]
+tech_required$YearsCodePro[tech_required$YearsCodePro == "Less than 1 year"] <- 1
+tech_required$YearsCodePro[tech_required$YearsCodePro == "More than 50 years"] <- 50
+tech_required$YearsCodePro <- as.numeric(tech_required$YearsCodePro)
+final_data <- tech_required[(tech_required$EdLevel %in% required_education_levels) & (tech_required$Country %in% top_countries),]
+final_data$new_dev = sub("^Developer.*", "Developer", final_data$DevType)
+
+final_data$new_dev[startsWith(as.character(final_data$DevType), "Developer")] <- "Developer"
+b <- str_split_fixed(final_data$new_dev, ";", 2)
+final_data <- cbind(final_data, b)
+names(final_data) <- make.names(names(final_data), unique = TRUE)
+dev_level_data <- data.frame(count=sort(table(final_data$new_dev), decreasing=TRUE))
+dev_positions <- c("Developer", "Data scientist or machine learning specialist", "Data or business analyst", "Engineering manager", "DevOps specialist", "Designer",
+"Engineer, data")
+
+final_data_with_position = final_data[final_data$X1.1 %in% dev_positions, ]
+final_data_sanitized = final_data_with_position[c("ConvertedComp", "Country", "EdLevel", "YearsCodePro", "X1.1", "X1", "LastHireDate", "OpenSourcer", "OpSys", "OrgSize", "YearsCodePro")]
+final_data_sanitized <- droplevels(final_data_sanitized)
+final_data_sanitized$ConvertedComp <- log(final_data_sanitized$ConvertedComp)
+final_data_sanitized$Country <- as.factor(final_data_sanitized$Country)
+final_data_sanitized$EdLevel <- as.factor(final_data_sanitized$EdLevel)
+final_data_sanitized$X1 <- as.factor(final_data_sanitized$X1)
+final_data_sanitized$X1.1 <- as.factor(final_data_sanitized$X1.1)
+final_data_sanitized$LastHireDate <- as.factor(final_data_sanitized$LastHireDate)
+final_data_sanitized$OpSys <- as.factor(final_data_sanitized$OpSys)
+final_data_sanitized$OpenSourcer <- as.factor(final_data_sanitized$OpenSourcer)
+final_data_sanitized$OrgSize <- as.factor(final_data_sanitized$OrgSize)
+final_data_sanitized_clean = na.omit(final_data_sanitized)
+colnames(final_data_sanitized_clean)[which(names(final_data_sanitized_clean) == "X1")] <- "Tech"
+colnames(final_data_sanitized_clean)[which(names(final_data_sanitized_clean) == "X1.1")] <- "Designation"
+set.seed(1)
+
+train = final_data_sanitized_clean %>%
+  sample_frac(0.7)
+
+test = final_data_sanitized_clean %>%
+  setdiff(train)
+
+x_train = model.matrix(ConvertedComp~., train)[,-1]
+x_test = model.matrix(ConvertedComp~., test)[,-1]
+
+y_train = train$ConvertedComp %>% unlist()
+
+y_test = test$ConvertedComp %>% unlist()
+cv.out = cv.glmnet(data.matrix(train),train$ConvertedComp, y_train, alpha = 1) # Fit lasso model on training data
+
+```
+
+We started EDA by looking at the distribution of the response variable (ConvertedComp) and found that they are not normally distributed. They seem to be heavily left skewed; therefore, we apply log transformation and the results are shown below. ConvertedComp looks normal after the log transformation, and we would be using the log transformation for the rest of our analysis.
+```{r, echo = FALSE, warning=F, fig.height=2.5}
+par(mfrow=c(1,2))
+hist(salary_data_complete$ConvertedComp, xlab = "Converted Compensation", main = "",col = c("royalblue2"))
+hist(log(salary_data_complete$ConvertedComp), xlab = "Log transformed converted compensation" , main = "", col = c("royalblue2"))
+```
+
+Then we examine different boxplots for different variables "Desgination", "Primary Technology", "Education qualification", "Country".
+
+Comparing salaries across different countries does not make sense since the buying power of different countres might be very different. Eg. USA and India. Therefore, we only consider countries with high median incomes and high frequency of data.
+
+The final set of countries chosen for our analysis are United States, United Kingdom,  Germany,  Canada, Netherlands, Australia, Sweden, and Switzerland.
+
+Let's start off with examning it for different countries. We take the top 8 countries by the frequency of data and plot the boxplot. 
+```{r, echo = FALSE, warning=F, fig.show = 'hold',fig.height = 2.5, fig.width= 7}
+ggplot(country_required, aes(x=Country, y=ConvertedComp)) +
+  geom_boxplot(fill = "royalblue2") +
+  scale_y_continuous(limits = quantile(country_required$ConvertedComp, c(0.1, 0.9)))+
+  theme_bw()
+```
+
+We observe some significant different in median salries amongst the high income countries as well
+
+
+Next up, we start with boxplots for different technologies. Let's start with a basic boxplot for top 12 languages as per frequency.
+
+```{r, echo = FALSE, warning=F,fig.show = 'hold', fig.height = 2.5, fig.width= 7}
+ggplot(tech_required, aes(x=X1, y=ConvertedComp)) + 
+  geom_boxplot(fill = "royalblue2") +
+  scale_y_continuous(limits = quantile(tech_required$ConvertedComp, c(0.1, 0.9)))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+We observe the median salaries of developers in languages "Clojure" and "Elixir" is relatively high. And, HTML/CSS is relatively lower (basic web developers).
+
+
+Lets plot the same for different education qualifications for the USA.
+
+```{r, echo = FALSE, warning=F,fig.show = 'hold', fig.height = 2.5}
+ggplot(education_required_us, aes(x=EdLevel, y=ConvertedComp)) + 
+  geom_boxplot(fill = "royalblue2") +
+  scale_y_continuous(limits = quantile(country_required$ConvertedComp, c(0.1, 0.9)))+
+  scale_x_discrete(labels=c("Associate","Bachelors","Masters","Doctoral", "Some study w/o degree")) 
+```
+
+As expected masters and doctorals earn more than any other degrees. Surprisingly, the trend is not the acorss the countries we chose for our analysis, in some cases there is no difference between masters and bachelors salary at all. Please refer to the code in Appendix for further details.
+
+## Model
+For training our model, we first randomly divide the training and test set in 70-30 ratio.
+
+For the selection of our model we use domain knowledge, coupled with stepwise BIC and Lasso regularization. While using Lasso Regularization we don't see promising results for features and we obtain the value of lambda which doesn't remove any features.
+```{r, echo = FALSE, warning=F,fig.show = 'hold', fig.height = 2.5}
+plot(cv.out)
+# mod1 <- lmer(ConvertedComp ~  (1|Country) + EdLevel + (1|X1) + X1.1 + OpenSourcer, data = train)
+final_model <- lmer(ConvertedComp ~  (1|Country) + EdLevel + (1|Tech)
+                    
+                    + Designation + OpenSourcer, data = train)
+predicted <- predict(final_model, newdata = test)
+
+sse <- sum((predicted - test$ConvertedComp)^2) # Calculate test MSE
+sst <- sum((test$ConvertedComp - mean(test$ConvertedComp))^2)
+rsq <- 1 -sse/sst
+```
+
+Since the number of levels in data is very high, we tried BIC for feature selection. Removing some features like gender manually (since these were not a part of this research question) . We add random intercept for technology and country to answer our research questions.
+
+```{r warning=FALSE, linewidth=20, results=FALSE}
+final_model <- lmer(ConvertedComp~(1|Country)+EdLevel+(1|Tech)+Designation+OpenSourcer,data = train)
+```
+
+
+
+## Model Assessment and Validation
+We start off with seeing the residual normality plot and fitted vs. residual plots
+```{r echo = FALSE, warning = F, fig.height=4.0}
+par(mfrow = c(1,2))
+plot(y = residuals(final_model), x = fitted(final_model) , xlab= "Fitted", ylab = "Residuals", col = "royalblue2")
+qqnorm(residuals(final_model), col = "royalblue2")
+```
+
+We observe that the plots look almost okay. Some kind of a trend in residuals variance, but nothing standing out.
+
+We then run our model on the test set. We observe an R-squared value of 0.32, which is a bit on the lower side, and this might be one of the limitations of our model.
+
+## Results
+
+To answer our research questions, lets start with analyzing random effects.
+
+```{r echo = FALSE, warning = F, fig.height=3.0}
+par(mfrow = c(1,2))
+a <- dotplot(ranef(final_model, condVar=TRUE))[1]
+b <- dotplot(ranef(final_model, condVar=TRUE))[2]
+print(a, position = c(0, 0, 0.5, 1), more = TRUE)
+print(b, position = c(0.5, 0, 1, 1))
+```
+
+1. We notice the baseline difference in salaris across different languages is very small, unless one is a HTML/CSS developer (completely different prgramming). This helps us conclude that since programming fundamentals remain consistent, so if you are good at one language you should be good.
+
+2. There seems to be larger variance amongst countries, and we can see developers in USA get paid the highest compared to any other country.
+
+Let's start analyzing fixed effects now. Some of the key finding from our analysis are which are significant at 0.05 significance leve.
+
+1. Model baseline is a person with an associate degree, business analyst, with more than 1 open source contribution per year has an average salary of 64000$.
+
+2. A DevOps Specialist is expected to earn 15.5% more keeping other factors constant.
+
+3. A person with more frequent open source contributions is expected to earn 6% more keeping other factors constant.
+
+4. Masters students are expected to earn 21% more than the baseline, keeping other factors constant.
+
+Please refer to the Appendix for the complete coeffecients table (non exponentiated).
+
+
+\newpage
+
+
+## Appendix
+
+```{r echo = FALSE}
+knitr::kable(summary(final_model)$coefficients, digits = 3)
+```
